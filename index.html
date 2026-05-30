@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Сравнение адресов аптек</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      background: #e8edf5 center / cover no-repeat fixed;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+    }
+
+    .card {
+      background: rgba(255, 255, 255, 0.93);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-radius: 20px;
+      padding: 36px 40px;
+      width: 100%;
+      max-width: 580px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.14);
+    }
+
+    h1 {
+      font-size: 1.45rem;
+      font-weight: 700;
+      color: #1a2744;
+      margin-bottom: 6px;
+      letter-spacing: -0.3px;
+    }
+
+    .subtitle {
+      font-size: 0.85rem;
+      color: #64748b;
+      margin-bottom: 30px;
+    }
+
+    .upload-group { display: flex; flex-direction: column; gap: 14px; margin-bottom: 22px; }
+
+    .upload-row { display: flex; align-items: center; gap: 14px; }
+
+    .upload-label {
+      font-size: 0.83rem;
+      font-weight: 600;
+      color: #374151;
+      min-width: 130px;
+      line-height: 1.3;
+    }
+
+    .file-btn {
+      flex: 1;
+      padding: 11px 16px;
+      border: 2px dashed #cbd5e1;
+      border-radius: 10px;
+      background: #f8fafc;
+      cursor: pointer;
+      font-size: 0.83rem;
+      color: #64748b;
+      text-align: center;
+      transition: border-color 0.2s, color 0.2s, background 0.2s;
+      user-select: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .file-btn:hover { border-color: #3b82f6; color: #3b82f6; background: #f0f7ff; }
+    .file-btn.loaded { border-color: #10b981; color: #065f46; background: #ecfdf5; border-style: solid; }
+
+    input[type="file"] { display: none; }
+
+    .divider { height: 1px; background: #e2e8f0; margin: 4px 0 18px; }
+
+    .btn-compare {
+      width: 100%;
+      padding: 13px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+      letter-spacing: 0.2px;
+    }
+    .btn-compare:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-compare:disabled { background: #94a3b8; cursor: not-allowed; opacity: 0.7; }
+
+    .progress {
+      display: none;
+      text-align: center;
+      font-size: 0.85rem;
+      color: #64748b;
+      padding: 14px 0 2px;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+    .stats {
+      display: none;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 22px;
+    }
+
+    .stat-box {
+      border-radius: 12px;
+      padding: 18px 10px;
+      text-align: center;
+    }
+    .stat-box.exact  { background: #f0fdf4; border: 1.5px solid #86efac; }
+    .stat-box.check  { background: #fffbeb; border: 1.5px solid #fcd34d; }
+    .stat-box.none   { background: #fef2f2; border: 1.5px solid #fca5a5; }
+
+    .stat-num { font-size: 2.1rem; font-weight: 800; line-height: 1; }
+    .stat-lbl { font-size: 0.72rem; color: #64748b; margin-top: 4px; font-weight: 500; }
+
+    .stat-box.exact .stat-num { color: #15803d; }
+    .stat-box.check .stat-num { color: #b45309; }
+    .stat-box.none  .stat-num { color: #dc2626; }
+
+    .btn-download {
+      display: none;
+      width: 100%;
+      margin-top: 16px;
+      padding: 13px;
+      background: #10b981;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-download:hover { background: #059669; }
+
+    .error-msg {
+      display: none;
+      margin-top: 14px;
+      padding: 12px 16px;
+      background: #fef2f2;
+      border: 1px solid #fca5a5;
+      border-radius: 8px;
+      color: #b91c1c;
+      font-size: 0.83rem;
+      line-height: 1.5;
+    }
+
+    /* Кнопка фона — фиксированная внизу справа */
+    .bg-pill {
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid #e2e8f0;
+      border-radius: 50px;
+      padding: 8px 16px;
+      font-size: 0.78rem;
+      color: #475569;
+      cursor: pointer;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.10);
+      transition: box-shadow 0.2s;
+      user-select: none;
+    }
+    .bg-pill:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.15); }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h1>Сравнение адресов аптек</h1>
+  <p class="subtitle">Загрузите два Excel-файла — сайт найдёт совпадения по адресам прямо в браузере</p>
+
+  <div class="upload-group">
+    <div class="upload-row">
+      <span class="upload-label">Файл-источник<br><small style="font-weight:400;color:#94a3b8">Виши / ЛРП</small></span>
+      <div class="file-btn" id="srcBtn" onclick="document.getElementById('srcInput').click()">
+        Выбрать файл…
+      </div>
+      <input type="file" id="srcInput" accept=".xlsx,.xls,.csv">
+    </div>
+
+    <div class="upload-row">
+      <span class="upload-label">Файл-досье<br><small style="font-weight:400;color:#94a3b8">Список аптек</small></span>
+      <div class="file-btn" id="dossierBtn" onclick="document.getElementById('dossierInput').click()">
+        Выбрать файл…
+      </div>
+      <input type="file" id="dossierInput" accept=".xlsx,.xls,.csv">
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <button class="btn-compare" id="compareBtn" disabled>Сравнить</button>
+
+  <div class="progress" id="progress">Анализируем адреса…</div>
+
+  <div class="error-msg" id="errorMsg"></div>
+
+  <div class="stats" id="stats">
+    <div class="stat-box exact">
+      <div class="stat-num" id="cntExact">0</div>
+      <div class="stat-lbl">Найдено точно</div>
+    </div>
+    <div class="stat-box check">
+      <div class="stat-num" id="cntCheck">0</div>
+      <div class="stat-lbl">Надо проверить</div>
+    </div>
+    <div class="stat-box none">
+      <div class="stat-num" id="cntNone">0</div>
+      <div class="stat-lbl">Не найдено</div>
+    </div>
+  </div>
+
+  <button class="btn-download" id="downloadBtn">⬇ Скачать результат (.xlsx)</button>
+</div>
+
+<!-- Кнопка выбора фона -->
+<label class="bg-pill" for="bgInput">🖼 Фон страницы</label>
+<input type="file" id="bgInput" accept="image/*">
+
+<script>
+// ─── Состояние ────────────────────────────────────────────────
+let srcRows = null, dossierRows = null, resultData = null;
+
+// ─── Константы ────────────────────────────────────────────────
+const ADDR_COLS = ['адрес', 'address', 'адрес аптеки', 'местонахождение'];
+const THRESHOLD_EXACT = 0.85;
+const THRESHOLD_CHECK = 0.60;
+
+// ─── Чтение файла ─────────────────────────────────────────────
+function bindInput(inputId, btnId, stateKey) {
+  document.getElementById(inputId).addEventListener('change', function () {
+    const file = this.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        const parsed = parseRows(raw, file.name);
+        if (stateKey === 'src') srcRows = parsed;
+        else dossierRows = parsed;
+        markBtn(btnId, file.name);
+        clearResult();
+        checkReady();
+      } catch (err) {
+        showError(err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function parseRows(raw, filename) {
+  if (!raw || raw.length < 2) throw new Error(`Файл "${filename}" пустой или содержит только заголовок.`);
+  const headers = raw[0].map(h => String(h).toLowerCase().trim());
+  const col = headers.findIndex(h => ADDR_COLS.includes(h));
+  if (col === -1) {
+    throw new Error(
+      `Не найдена колонка с адресом в файле "${filename}".\n` +
+      `Ожидается одно из названий: ${ADDR_COLS.join(', ')}.`
+    );
+  }
+  return raw.slice(1)
+    .map((row, i) => ({
+      rowNum: i + 2,
+      address: String(row[col] || '').trim(),
+      key: normalize(String(row[col] || ''))
+    }))
+    .filter(r => r.address);
+}
+
+// ─── Нормализация ─────────────────────────────────────────────
+function normalize(s) {
+  return s
+    .toLowerCase()
+    .replace(/[-—–]/g, ' ')
+    .replace(/[.,;:!?()"'«»]/g, ' ')
+    .replace(/\bулица\b/g, 'ул')
+    .replace(/\bпроспект\b/g, 'пр')
+    .replace(/\bпереулок\b/g, 'пер')
+    .replace(/\bбульвар\b/g, 'бул')
+    .replace(/\bшоссе\b/g, 'ш')
+    .replace(/\bдом\b/g, 'д')
+    .replace(/\bкорпус\b/g, 'к')
+    .replace(/\bквартира\b/g, 'кв')
+    .replace(/\bгород\b/g, 'г')
+    .replace(/\bмосковская\s+область\b/g, 'мо')
+    .replace(/\bмосковская\b/g, 'мо')
+    .replace(/\bмоскова\b/g, 'москва')
+    .replace(/\bсанкт-петербург\b/g, 'спб')
+    .replace(/\bс\.?-?петербург\b/g, 'спб')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ─── Fuzzy matching ───────────────────────────────────────────
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  // Только одна строка prev/curr для экономии памяти
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i];
+    for (let j = 1; j <= b.length; j++) {
+      curr[j] = a[i-1] === b[j-1]
+        ? prev[j-1]
+        : 1 + Math.min(prev[j], curr[j-1], prev[j-1]);
+    }
+    prev = curr;
+  }
+  return prev[b.length];
+}
+
+function strSim(a, b) {
+  if (!a && !b) return 1;
+  if (!a || !b) return 0;
+  const maxLen = Math.max(a.length, b.length);
+  return 1 - levenshtein(a, b) / maxLen;
+}
+
+function tokenSim(a, b) {
+  const ta = new Set(a.split(' ').filter(t => t.length > 1));
+  const tb = new Set(b.split(' ').filter(t => t.length > 1));
+  if (ta.size === 0 && tb.size === 0) return 1;
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let inter = 0;
+  for (const t of ta) if (tb.has(t)) inter++;
+  return inter / (ta.size + tb.size - inter); // Jaccard
+}
+
+function similarity(a, b) {
+  // Берём максимум двух метрик
+  return Math.max(strSim(a, b), tokenSim(a, b));
+}
+
+// ─── Индекс токенов для ускорения ────────────────────────────
+function buildTokenIndex(rows) {
+  const idx = new Map();
+  rows.forEach((r, i) => {
+    r.key.split(' ').filter(t => t.length > 2).forEach(t => {
+      if (!idx.has(t)) idx.set(t, []);
+      idx.get(t).push(i);
+    });
+  });
+  return idx;
+}
+
+function getCandidates(key, tokenIdx, fallback) {
+  const tokens = key.split(' ').filter(t => t.length > 2);
+  const seen = new Set();
+  tokens.forEach(t => {
+    (tokenIdx.get(t) || []).forEach(i => seen.add(i));
+  });
+  // Если кандидатов нет — сравниваем со всеми
+  return seen.size > 0 ? [...seen] : fallback;
+}
+
+// ─── Основное сравнение ───────────────────────────────────────
+function compare() {
+  if (!srcRows || !dossierRows) return;
+  showError('');
+  document.getElementById('progress').style.display = 'block';
+  document.getElementById('compareBtn').disabled = true;
+  document.getElementById('stats').style.display = 'none';
+  document.getElementById('downloadBtn').style.display = 'none';
+
+  // Дать браузеру отрисовать UI, потом считать
+  setTimeout(() => {
+    try {
+      const tokenIdx = buildTokenIndex(dossierRows);
+      const allIdxs = dossierRows.map((_, i) => i);
+
+      resultData = srcRows.map(src => {
+        const candidates = getCandidates(src.key, tokenIdx, allIdxs);
+        let bestScore = -1, bestMatch = null;
+        for (const i of candidates) {
+          const d = dossierRows[i];
+          const score = similarity(src.key, d.key);
+          if (score > bestScore) { bestScore = score; bestMatch = d; }
+        }
+
+        const status = bestScore >= THRESHOLD_EXACT ? 'ТОЧНО'
+                     : bestScore >= THRESHOLD_CHECK ? 'ПРОВЕРИТЬ'
+                     : 'НЕ НАЙДЕНО';
+
+        return {
+          'Адрес из источника': src.address,
+          'Адрес из досье':     bestMatch ? bestMatch.address : '',
+          'Статус':             status,
+          'Похожесть':          Math.round(bestScore * 100) + '%',
+          'Строка источника':   src.rowNum,
+          'Строка досье':       bestMatch ? bestMatch.rowNum : '',
+          'Ключ источника':     src.key,
+          'Ключ досье':         bestMatch ? bestMatch.key : ''
+        };
+      });
+
+      // Счётчики
+      let exact = 0, check = 0, none = 0;
+      resultData.forEach(r => {
+        if (r['Статус'] === 'ТОЧНО') exact++;
+        else if (r['Статус'] === 'ПРОВЕРИТЬ') check++;
+        else none++;
+      });
+
+      document.getElementById('cntExact').textContent = exact;
+      document.getElementById('cntCheck').textContent = check;
+      document.getElementById('cntNone').textContent  = none;
+      document.getElementById('stats').style.display = 'grid';
+      document.getElementById('downloadBtn').style.display = 'block';
+
+    } catch (err) {
+      showError('Ошибка сравнения: ' + err.message);
+    } finally {
+      document.getElementById('progress').style.display = 'none';
+      document.getElementById('compareBtn').disabled = false;
+    }
+  }, 60);
+}
+
+// ─── Скачать Excel ────────────────────────────────────────────
+function downloadResult() {
+  if (!resultData) return;
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(resultData);
+
+  // Минимальная ширина колонок
+  const colWidths = Object.keys(resultData[0]).map(k => ({ wch: Math.max(k.length, 18) }));
+  ws['!cols'] = colWidths;
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Результат');
+  XLSX.writeFile(wb, 'result_addresses.xlsx');
+}
+
+// ─── Фон страницы ─────────────────────────────────────────────
+document.getElementById('bgInput').addEventListener('change', function () {
+  const file = this.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  document.body.style.backgroundImage   = `url('${url}')`;
+  document.body.style.backgroundSize    = 'cover';
+  document.body.style.backgroundPosition = 'center';
+  document.body.style.backgroundAttachment = 'fixed';
+});
+
+// ─── UI helpers ───────────────────────────────────────────────
+function markBtn(id, filename) {
+  const btn = document.getElementById(id);
+  const name = filename.length > 30 ? filename.slice(0, 28) + '…' : filename;
+  btn.textContent = '✓ ' + name;
+  btn.classList.add('loaded');
+}
+
+function checkReady() {
+  document.getElementById('compareBtn').disabled = !(srcRows && dossierRows);
+}
+
+function clearResult() {
+  resultData = null;
+  document.getElementById('stats').style.display = 'none';
+  document.getElementById('downloadBtn').style.display = 'none';
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.style.display = msg ? 'block' : 'none';
+  el.textContent = msg;
+}
+
+// ─── Подключение кнопок ───────────────────────────────────────
+bindInput('srcInput',     'srcBtn',     'src');
+bindInput('dossierInput', 'dossierBtn', 'dossier');
+document.getElementById('compareBtn').addEventListener('click', compare);
+document.getElementById('downloadBtn').addEventListener('click', downloadResult);
+</script>
+</body>
+</html>
