@@ -107,7 +107,7 @@
 
     .stats {
       display: none;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(2, 1fr);
       gap: 12px;
       margin-top: 22px;
     }
@@ -118,14 +118,12 @@
       text-align: center;
     }
     .stat-box.exact  { background: #f0fdf4; border: 1.5px solid #86efac; }
-    .stat-box.check  { background: #fffbeb; border: 1.5px solid #fcd34d; }
     .stat-box.none   { background: #fef2f2; border: 1.5px solid #fca5a5; }
 
     .stat-num { font-size: 2.1rem; font-weight: 800; line-height: 1; }
     .stat-lbl { font-size: 0.72rem; color: #64748b; margin-top: 4px; font-weight: 500; }
 
     .stat-box.exact .stat-num { color: #15803d; }
-    .stat-box.check .stat-num { color: #b45309; }
     .stat-box.none  .stat-num { color: #dc2626; }
 
     .btn-download {
@@ -193,11 +191,7 @@
   <div class="stats" id="stats">
     <div class="stat-box exact">
       <div class="stat-num" id="cntExact">0</div>
-      <div class="stat-lbl">Найдено точно</div>
-    </div>
-    <div class="stat-box check">
-      <div class="stat-num" id="cntCheck">0</div>
-      <div class="stat-lbl">Надо проверить</div>
+      <div class="stat-lbl">Найдено</div>
     </div>
     <div class="stat-box none">
       <div class="stat-num" id="cntNone">0</div>
@@ -214,9 +208,17 @@
 let srcRows = null, dossierRows = null, resultData = null;
 
 // ─── Константы ────────────────────────────────────────────────
-const ADDR_COLS = ['адрес', 'address', 'адрес аптеки', 'местонахождение'];
-const THRESHOLD_EXACT = 0.85;
-const THRESHOLD_CHECK = 0.60;
+// «названия строк» — колонка адреса в файлах ЛРП/Виши, «аптеки» — в файле Виши
+const ADDR_COLS = ['адрес', 'address', 'адрес аптеки', 'местонахождение',
+                   'названия строк', 'название строки', 'аптеки'];
+const THRESHOLD = 0.85;
+
+// Маркеры адреса — не несут различающей информации, выкидываются из токенов
+const STOP_TOKENS = new Set([
+  'ул','пр','пер','бул','ш','наб','мкр','пл','туп','лин','прд',
+  'б','г','д','к','с','кв','оф','пом','лит','им','имени',
+  'тер','территория','х','м','п'
+]);
 
 // ─── Чтение файла ─────────────────────────────────────────────
 function bindInput(inputId, btnId, stateKey) {
@@ -243,47 +245,150 @@ function bindInput(inputId, btnId, stateKey) {
   });
 }
 
+// Ищем строку-заголовок в первых 15 строках файла
+function findHeaderRow(raw) {
+  for (let i = 0; i < Math.min(15, raw.length); i++) {
+    const cells = raw[i].map(h => String(h).toLowerCase().trim());
+    if (cells.some(h => ADDR_COLS.includes(h))) return i;
+  }
+  return -1;
+}
+
 function parseRows(raw, filename) {
-  if (!raw || raw.length < 2) throw new Error(`Файл "${filename}" пустой или содержит только заголовок.`);
-  const headers = raw[0].map(h => String(h).toLowerCase().trim());
-  const col = headers.findIndex(h => ADDR_COLS.includes(h));
-  if (col === -1) {
+  if (!raw || raw.length < 2) throw new Error(`Файл "${filename}" пустой.`);
+
+  const headerIdx = findHeaderRow(raw);
+  if (headerIdx === -1) {
     throw new Error(
       `Не найдена колонка с адресом в файле "${filename}".\n` +
-      `Ожидается одно из названий: ${ADDR_COLS.join(', ')}.`
+      `Ожидается одно из: ${ADDR_COLS.join(', ')}.`
     );
   }
-  return raw.slice(1)
-    .map((row, i) => ({
-      rowNum: i + 2,
-      address: String(row[col] || '').trim(),
-      key: normalize(String(row[col] || ''))
-    }))
-    .filter(r => r.address);
+
+  const headers = raw[headerIdx].map(h => String(h).toLowerCase().trim());
+  const addrCol = headers.findIndex(h => ADDR_COLS.includes(h));
+
+  // Если рядом есть «город» — дописываем его перед адресом.
+  // Это нужно для досье, где город и улица в разных колонках,
+  // а в источнике (ЛРП/Виши) они записаны вместе.
+  const cityCol = headers.findIndex(h => h === 'город');
+
+  return raw.slice(headerIdx + 1)
+    .map((row, i) => {
+      const street = String(row[addrCol] || '').trim();
+      if (!street) return null;
+      const city   = cityCol !== -1 ? String(row[cityCol] || '').trim() : '';
+      const full   = city ? `${city} ${street}` : street;
+      return {
+        rowNum:  i + headerIdx + 2,
+        address: full,
+        key:     normalize(full)
+      };
+    })
+    .filter(Boolean);
 }
 
 // ─── Нормализация ─────────────────────────────────────────────
+// В JS «\b» не работает с кириллицей, поэтому используем явные lookaround.
+// LB / RB — «левая/правая граница» слова для кириллицы и цифр.
+const LB = '(?<![а-я0-9])';
+const RB = '(?![а-я0-9])';
+// Сборка регулярки-слова с границами
+function W(body, flags = 'g') {
+  return new RegExp(LB + body + RB, flags);
+}
+
 function normalize(s) {
-  return s
-    .toLowerCase()
-    .replace(/[-—–]/g, ' ')
-    .replace(/[.,;:!?()"'«»]/g, ' ')
-    .replace(/\bулица\b/g, 'ул')
-    .replace(/\bпроспект\b/g, 'пр')
-    .replace(/\bпереулок\b/g, 'пер')
-    .replace(/\bбульвар\b/g, 'бул')
-    .replace(/\bшоссе\b/g, 'ш')
-    .replace(/\bдом\b/g, 'д')
-    .replace(/\bкорпус\b/g, 'к')
-    .replace(/\bквартира\b/g, 'кв')
-    .replace(/\bгород\b/g, 'г')
-    .replace(/\bмосковская\s+область\b/g, 'мо')
-    .replace(/\bмосковская\b/g, 'мо')
-    .replace(/\bмоскова\b/g, 'москва')
-    .replace(/\bсанкт-петербург\b/g, 'спб')
-    .replace(/\bс\.?-?петербург\b/g, 'спб')
-    .replace(/\s+/g, ' ')
-    .trim();
+  let r = s.toLowerCase();
+
+  // Примечания в скобках: «(клиника К+31)», «(ТЦ Мега)»
+  r = r.replace(/\([^)]*\)/g, ' ');
+
+  // «аптека №28», «ап/п №34», «пом. 247», «офис 12», «кв. 5», «литер А», «#42»
+  r = r.replace(W('аптека\\s*[#№]?\\s*\\d+\\w*'), ' ');
+  r = r.replace(W('ап\\s*\\/?\\s*п\\s*[#№]?\\s*\\d+\\w*'), ' ');
+  r = r.replace(W('пом(ещение)?\\.?\\s*\\d+(\\/\\d+)?\\w*'), ' ');
+  r = r.replace(W('оф(ис)?\\.?\\s*\\d+\\w*'), ' ');
+  r = r.replace(W('кв(артира)?\\.?\\s*\\d+\\w*'), ' ');
+  r = r.replace(W('лит(ер)?\\.?\\s*[а-я]'), ' ');
+  r = r.replace(/[#№]\s*\d+\w*/g, ' ');
+
+  // Санкт-Петербург в обоих написаниях → спб
+  r = r.replace(/санкт[\s\-]*петербург/g, 'спб');
+  r = r.replace(W('с[\\s\\-]*петербург'), 'спб');
+
+  // Типы населённых пунктов — выкидываем (село, посёлок и т.п.)
+  r = r.replace(W('село'),    ' ');
+  r = r.replace(W('деревня'), ' ');
+  r = r.replace(W('пос[её]лок'), ' ');
+  r = r.replace(W('хутор'),   ' ');
+  r = r.replace(W('станица'), ' ');
+  r = r.replace(W('кварт(ал)?'), ' ');
+  r = r.replace(W('кв\\s*л'), ' ');
+
+  // Пунктуация → пробел
+  r = r.replace(/[.,;:!?"'«»]/g, ' ');
+  r = r.replace(/[-—–]/g, ' ');
+
+  // Удалить маркер «дом N» / «д N» перед числом, оставив число
+  r = r.replace(new RegExp(LB + '(дом|д)\\s+(?=\\d)', 'g'), ' ');
+
+  // Типы улиц → одна форма
+  r = r.replace(W('проспект'), 'пр');
+  r = r.replace(W('пр\\s*кт'), 'пр');
+  r = r.replace(W('пр\\s*т'),  'пр');
+  r = r.replace(W('прт'),      'пр');
+
+  r = r.replace(W('проезд'),   'прд');
+  r = r.replace(W('пр\\s*д'),  'прд');
+
+  r = r.replace(W('улица'),    'ул');
+  r = r.replace(W('переулок'), 'пер');
+  r = r.replace(W('бульвар'),  'бул');
+  r = r.replace(W('б\\s*р'),   'бул');
+  r = r.replace(W('шоссе'),    'ш');
+  r = r.replace(W('набережная'), 'наб');
+  r = r.replace(W('площадь'),  'пл');
+  r = r.replace(W('микрорайон'), 'мкр');
+  r = r.replace(W('мкрн'),     'мкр');
+  r = r.replace(W('тупик'),    'туп');
+  r = r.replace(W('линия'),    'лин');
+
+  // Корпус/строение → к/с (до слипания литер!)
+  r = r.replace(W('корпус'),   'к');
+  r = r.replace(W('корп'),     'к');
+  r = r.replace(W('строение'), 'с');
+  r = r.replace(W('строен'),   'с');
+  r = r.replace(W('стр'),      'с');
+
+  r = r.replace(W('город'),    'г');
+  r = r.replace(W('московская\\s+область'), 'мо');
+  r = r.replace(W('московская'), 'мо');
+
+  // Дроби: «6 / 1» → «6/1»
+  r = r.replace(/\s*\/\s*/g, '/');
+
+  // «к 2» → «к2», «с 4» → «с4» (двукратно — для «к 2 с 4»)
+  for (let i = 0; i < 2; i++) {
+    r = r.replace(new RegExp(LB + '([кс])\\s+(\\d)', 'g'), '$1$2');
+  }
+  // «к2 с4» → «к2с4» и наоборот
+  r = r.replace(new RegExp(LB + '(к\\d+)\\s+(с\\d+)', 'g'), '$1$2');
+  r = r.replace(new RegExp(LB + '(с\\d+)\\s+(к\\d+)', 'g'), '$1$2');
+
+  // Литеры дома: «75 а» → «75а» (включая «19 к» — литера К)
+  r = r.replace(/(\d)\s+([а-я])(?![а-я0-9])/g, '$1$2');
+
+  return r.replace(/\s+/g, ' ').trim();
+}
+
+function tokensOf(key) {
+  return key.split(' ').filter(t => t && !STOP_TOKENS.has(t));
+}
+
+const NUM_RE = /\d+(?:\/\d+)?/g;
+function numbersOf(key) {
+  return new Set(key.match(NUM_RE) || []);
 }
 
 // ─── Fuzzy matching ───────────────────────────────────────────
@@ -312,26 +417,56 @@ function strSim(a, b) {
   return 1 - levenshtein(a, b) / maxLen;
 }
 
-function tokenSim(a, b) {
-  const ta = new Set(a.split(' ').filter(t => t.length > 1));
-  const tb = new Set(b.split(' ').filter(t => t.length > 1));
-  if (ta.size === 0 && tb.size === 0) return 1;
-  if (ta.size === 0 || tb.size === 0) return 0;
-  let inter = 0;
-  for (const t of ta) if (tb.has(t)) inter++;
-  return inter / (ta.size + tb.size - inter); // Jaccard
+// Доля чисел из меньшего множества, нашедшихся в большем (1.0 = все совпали)
+function numberOverlap(a, b) {
+  const na = numbersOf(a), nb = numbersOf(b);
+  if (na.size === 0 && nb.size === 0) return 1;
+  if (na.size === 0 || nb.size === 0) return 0;
+  const [small, big] = na.size <= nb.size ? [na, nb] : [nb, na];
+  let hit = 0;
+  for (const n of small) if (big.has(n)) hit++;
+  return hit / small.size;
 }
 
 function similarity(a, b) {
-  // Берём максимум двух метрик
-  return Math.max(strSim(a, b), tokenSim(a, b));
+  if (a === b) return 1;
+
+  const ta = new Set(tokensOf(a));
+  const tb = new Set(tokensOf(b));
+  if (ta.size === 0 || tb.size === 0) return strSim(a, b);
+
+  let inter = 0;
+  for (const t of ta) if (tb.has(t)) inter++;
+  const union = ta.size + tb.size - inter;
+  const jacc = inter / union;
+  const ss = strSim(a, b);
+  let score = Math.max(jacc, ss);
+
+  const nm = numberOverlap(a, b);
+
+  // Асимметричная защита: меньший набор почти полностью внутри большего
+  // и номера домов сходятся → это один адрес с лишним микрорайоном/районом
+  const pA = inter / ta.size;
+  const pB = inter / tb.size;
+  const maxContain = Math.max(pA, pB);
+  if (nm >= 0.99 && maxContain >= 0.75 && inter >= 2) {
+    score = Math.max(score, 0.90);
+  }
+
+  // Штраф: ни одно число не совпало → почти наверняка другой дом
+  if (nm === 0 && (numbersOf(a).size > 0 || numbersOf(b).size > 0)) {
+    score *= 0.55;
+  }
+
+  return score;
 }
 
 // ─── Индекс токенов для ускорения ────────────────────────────
 function buildTokenIndex(rows) {
   const idx = new Map();
   rows.forEach((r, i) => {
-    r.key.split(' ').filter(t => t.length > 2).forEach(t => {
+    tokensOf(r.key).forEach(t => {
+      if (t.length < 3) return;
       if (!idx.has(t)) idx.set(t, []);
       idx.get(t).push(i);
     });
@@ -340,12 +475,11 @@ function buildTokenIndex(rows) {
 }
 
 function getCandidates(key, tokenIdx, fallback) {
-  const tokens = key.split(' ').filter(t => t.length > 2);
+  const tokens = tokensOf(key).filter(t => t.length >= 3);
   const seen = new Set();
   tokens.forEach(t => {
     (tokenIdx.get(t) || []).forEach(i => seen.add(i));
   });
-  // Если кандидатов нет — сравниваем со всеми
   return seen.size > 0 ? [...seen] : fallback;
 }
 
@@ -373,32 +507,27 @@ function compare() {
           if (score > bestScore) { bestScore = score; bestMatch = d; }
         }
 
-        const status = bestScore >= THRESHOLD_EXACT ? 'ТОЧНО'
-                     : bestScore >= THRESHOLD_CHECK ? 'ПРОВЕРИТЬ'
-                     : 'НЕ НАЙДЕНО';
-
+        const found = bestScore >= THRESHOLD;
         return {
           'Адрес из источника': src.address,
-          'Адрес из досье':     bestMatch ? bestMatch.address : '',
-          'Статус':             status,
+          'Адрес из досье':     found ? bestMatch.address : '',
+          'Статус':             found ? 'НАЙДЕНО' : 'НЕ НАЙДЕНО',
           'Похожесть':          Math.round(bestScore * 100) + '%',
           'Строка источника':   src.rowNum,
-          'Строка досье':       bestMatch ? bestMatch.rowNum : '',
+          'Строка досье':       found ? bestMatch.rowNum : '',
           'Ключ источника':     src.key,
-          'Ключ досье':         bestMatch ? bestMatch.key : ''
+          'Ключ досье':         found ? bestMatch.key : ''
         };
       });
 
       // Счётчики
-      let exact = 0, check = 0, none = 0;
+      let exact = 0, none = 0;
       resultData.forEach(r => {
-        if (r['Статус'] === 'ТОЧНО') exact++;
-        else if (r['Статус'] === 'ПРОВЕРИТЬ') check++;
+        if (r['Статус'] === 'НАЙДЕНО') exact++;
         else none++;
       });
 
       document.getElementById('cntExact').textContent = exact;
-      document.getElementById('cntCheck').textContent = check;
       document.getElementById('cntNone').textContent  = none;
       document.getElementById('stats').style.display = 'grid';
       document.getElementById('downloadBtn').style.display = 'block';
