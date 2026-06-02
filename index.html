@@ -275,13 +275,17 @@ function parseRows(raw, filename) {
 
   return raw.slice(headerIdx + 1)
     .map((row, i) => {
-      const street = String(row[addrCol] || '').trim();
+      // raw — оригинальное содержимое ячейки 1в1 (для вывода в результат)
+      const raw    = String(row[addrCol] ?? '');
+      const street = raw.trim();
       if (!street) return null;
       const city   = cityCol !== -1 ? String(row[cityCol] || '').trim() : '';
+      // full — склейка для матчинга (город + улица), оригинал не трогаем
       const full   = city ? `${city} ${street}` : street;
       return {
         rowNum:  i + headerIdx + 2,
-        address: full,
+        rawAddress: raw,        // как в ячейке, без модификаций
+        address: full,          // для отображения/совместимости
         key:     normalize(full)
       };
     })
@@ -509,8 +513,9 @@ function compare() {
 
         const found = bestScore >= THRESHOLD;
         return {
-          'Адрес из источника': src.address,
-          'Адрес из досье':     found ? bestMatch.address : '',
+          'Адрес из источника': src.rawAddress,
+          // 1в1 как в ячейке «Адрес аптеки» в файле досье
+          'Адрес аптеки':       found ? bestMatch.rawAddress : '',
           'Статус':             found ? 'НАЙДЕНО' : 'НЕ НАЙДЕНО',
           'Похожесть':          Math.round(bestScore * 100) + '%',
           'Строка источника':   src.rowNum,
