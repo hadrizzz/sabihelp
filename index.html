@@ -208,9 +208,13 @@
 let srcRows = null, dossierRows = null, resultData = null;
 
 // ─── Константы ────────────────────────────────────────────────
-// «названия строк» — колонка адреса в файлах ЛРП/Виши, «аптеки» — в файле Виши
+// Колонки с адресами. Важно: выбираем не первую попавшуюся колонку,
+// а самую приоритетную. Для досье нужен именно «Адрес аптеки»,
+// чтобы в результат попадал адрес 1в1 из этой ячейки.
 const ADDR_COLS = ['адрес', 'address', 'адрес аптеки', 'местонахождение',
                    'названия строк', 'название строки', 'аптеки'];
+const ADDR_COL_PRIORITY = ['адрес аптеки', 'адрес', 'address', 'местонахождение',
+                           'названия строк', 'название строки', 'аптеки'];
 const THRESHOLD = 0.85;
 
 // Маркеры адреса — не несут различающей информации, выкидываются из токенов
@@ -229,9 +233,7 @@ function bindInput(inputId, btnId, stateKey) {
     reader.onload = (e) => {
       try {
         const wb = XLSX.read(e.target.result, { type: 'array' });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-        const parsed = parseRows(raw, file.name);
+        const parsed = parseWorkbook(wb, file.name);
         if (stateKey === 'src') srcRows = parsed;
         else dossierRows = parsed;
         markBtn(btnId, file.name);
@@ -245,10 +247,53 @@ function bindInput(inputId, btnId, stateKey) {
   });
 }
 
+function normalizeHeader(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function headerPriorityScore(headers) {
+  const normalized = headers.map(h => normalizeHeader(h));
+  for (let i = 0; i < ADDR_COL_PRIORITY.length; i++) {
+    const name = ADDR_COL_PRIORITY[i];
+    if (normalized.some(h => h === name || h.includes(name))) {
+      return ADDR_COL_PRIORITY.length - i;
+    }
+  }
+  return 0;
+}
+
+function parseWorkbook(wb, filename) {
+  let best = null;
+
+  wb.SheetNames.forEach(sheetName => {
+    const ws = wb.Sheets[sheetName];
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const headerIdx = findHeaderRow(raw);
+    if (headerIdx === -1) return;
+
+    const score = headerPriorityScore(raw[headerIdx]);
+    if (!best || score > best.score) {
+      best = { sheetName, raw, score };
+    }
+  });
+
+  if (!best) {
+    throw new Error(
+      `Не найдена колонка с адресом в файле "${filename}".\n` +
+      `Ожидается одно из: ${ADDR_COLS.join(', ')}.`
+    );
+  }
+
+  return parseRows(best.raw, `${filename} / ${best.sheetName}`);
+}
+
 // Ищем строку-заголовок в первых 15 строках файла
 function findHeaderRow(raw) {
   for (let i = 0; i < Math.min(15, raw.length); i++) {
-    const cells = raw[i].map(h => String(h).toLowerCase().trim());
+    const cells = raw[i].map(h => normalizeHeader(h));
     if (cells.some(h => ADDR_COLS.includes(h))) return i;
   }
   return -1;
@@ -265,13 +310,15 @@ function parseRows(raw, filename) {
     );
   }
 
-  const headers = raw[headerIdx].map(h => String(h).toLowerCase().trim());
-  const addrCol = headers.findIndex(h => ADDR_COLS.includes(h));
+  const headers = raw[headerIdx].map(h => normalizeHeader(h));
+  const addrCol = ADDR_COL_PRIORITY
+    .map(name => headers.findIndex(h => h === name || h.includes(name)))
+    .find(i => i !== -1);
 
   // Если рядом есть «город» — дописываем его перед адресом.
   // Это нужно для досье, где город и улица в разных колонках,
   // а в источнике (ЛРП/Виши) они записаны вместе.
-  const cityCol = headers.findIndex(h => h === 'город');
+  const cityCol = headers.findIndex(h => h === 'город' || h.includes('город'));
 
   return raw.slice(headerIdx + 1)
     .map((row, i) => {
@@ -284,7 +331,7 @@ function parseRows(raw, filename) {
       const full   = city ? `${city} ${street}` : street;
       return {
         rowNum:  i + headerIdx + 2,
-        rawAddress: raw,        // как в ячейке, без модификаций
+        rawAddress: raw.trim(), // строго как в выбранной колонке файла
         address: full,          // для отображения/совместимости
         key:     normalize(full)
       };
@@ -557,7 +604,8 @@ function downloadResult() {
   ws['!cols'] = colWidths;
 
   XLSX.utils.book_append_sheet(wb, ws, 'Результат');
-  XLSX.writeFile(wb, 'result_addresses.xlsx');
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  XLSX.writeFile(wb, `result_addresses_${stamp}.xlsx`);
 }
 
 // ─── UI helpers ───────────────────────────────────────────────
